@@ -1,8 +1,6 @@
 fastapi==0.111.0
 uvicorn[standard]==0.23.2
-librosa==0.10.1               # audio processing
 soundfile==0.12.1
-sentencepiece==0.1.99         # needed by small ASR tokenizer
 requests==2.32.0
 numpy>=1.25,<2.0
 scipy>=1.10,<2.0
