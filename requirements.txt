@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+transformers
+torch
+librosa
+PyWavelets
+soundfile
+numpy
+scipy
+pydantic
