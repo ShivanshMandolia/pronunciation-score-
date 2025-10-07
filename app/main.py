@@ -1,6 +1,9 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile, librosa, requests, os
+import tempfile, wave, json
+from vosk import Model, KaldiRecognizer
+from pydub import AudioSegment
+import numpy as np
 from app.utils import compute_acoustic_score, compute_phoneme_score
 
 app = FastAPI()
@@ -14,11 +17,10 @@ app.add_middleware(
 )
 
 # -------------------------
-# AssemblyAI Inference API
+# Load Vosk model once at startup
 # -------------------------
-AAI_TOKEN = os.getenv("AAI_TOKEN")  # Set your AssemblyAI API key in Render or .env
-HEADERS = {"authorization": AAI_TOKEN}
-TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
+MODEL_PATH = "models/vosk-model-small-en-us-0.15"
+model = Model(MODEL_PATH)
 
 @app.post("/analyze/")
 async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
@@ -27,41 +29,35 @@ async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
     tmp.write(await audio.read())
     tmp.close()
 
-    # Upload audio to AssemblyAI
-    with open(tmp.name, "rb") as f:
-        upload_resp = requests.post("https://api.assemblyai.com/v2/upload", 
-                                    headers=HEADERS, data=f)
-    if upload_resp.status_code != 200:
-        return {"error": f"Audio upload failed: {upload_resp.text}"}
-    audio_url = upload_resp.json()["upload_url"]
+    # Convert audio to mono 16kHz WAV using pydub
+    audio_segment = AudioSegment.from_file(tmp.name)
+    audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+    tmp_fixed = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    audio_segment.export(tmp_fixed.name, format="wav")
 
-    # Request transcription
-    transcript_req = {
-        "audio_url": audio_url,
-        "auto_chapters": False,
-        "speaker_labels": False
-    }
-    transcript_resp = requests.post(TRANSCRIPT_URL, headers=HEADERS, json=transcript_req)
-    if transcript_resp.status_code != 200:
-        return {"error": f"Transcription request failed: {transcript_resp.text}"}
-    transcript_id = transcript_resp.json()["id"]
-
-    # Poll until transcription is complete
+    # Open with wave for Vosk
+    wf = wave.open(tmp_fixed.name, "rb")
+    rec = KaldiRecognizer(model, wf.getframerate())
+    predicted_text = ""
     while True:
-        check_resp = requests.get(f"{TRANSCRIPT_URL}/{transcript_id}", headers=HEADERS)
-        if check_resp.status_code != 200:
-            return {"error": f"Transcription check failed: {check_resp.text}"}
-        status = check_resp.json()["status"]
-        if status == "completed":
-            predicted_text = check_resp.json()["text"].lower()
+        data = wf.readframes(4000)
+        if len(data) == 0:
             break
-        elif status == "failed":
-            return {"error": "Transcription failed"}
-    
-    # Load audio locally for scoring
-    y, sr = librosa.load(tmp.name, sr=16000)
+        if rec.AcceptWaveform(data):
+            res = json.loads(rec.Result())
+            predicted_text += res.get("text", "") + " "
+    # Final partial
+    res = json.loads(rec.FinalResult())
+    predicted_text += res.get("text", "")
+    predicted_text = predicted_text.strip().lower()
+
+    # Convert to NumPy array for acoustic scoring
+    y = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+    sr = 16000
+
+    # Compute scores
     acoustic_score = compute_acoustic_score(y, sr)
-    phoneme_score = compute_phoneme_score(text, predicted_text)
+    phoneme_score = compute_phoneme_score(text.lower(), predicted_text)
     final_score = (0.6 * phoneme_score) + (0.4 * acoustic_score)
 
     return {
