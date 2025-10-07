@@ -1,12 +1,16 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from vosk import Model, KaldiRecognizer
-from pydub import AudioSegment
-import io, wave, json, numpy as np
+import io, wave, json, subprocess
+import numpy as np
+import soundfile as sf
 from app.utils import compute_acoustic_score, compute_phoneme_score
 
 app = FastAPI()
 
+# -------------------------
+# CORS Middleware
+# -------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,36 +19,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -------------------------
+# Load Vosk model once at startup
+# -------------------------
 MODEL_PATH = "models/vosk-model-small-en-us-0.15"
 model = Model(MODEL_PATH)
 
 @app.post("/analyze/")
 async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
     # ----------------------
-    # Load audio into memory
+    # Read audio into memory
     # ----------------------
     raw_audio = await audio.read()
-    audio_segment = AudioSegment.from_file(io.BytesIO(raw_audio))
-    audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+    in_bytes = io.BytesIO(raw_audio)
+    
+    # ----------------------
+    # Convert to mono 16kHz WAV in memory
+    # ----------------------
+    out_bytes = io.BytesIO()
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", "pipe:0", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"],
+        input=in_bytes.read(),
+        stdout=out_bytes,
+        stderr=subprocess.DEVNULL
+    )
+    out_bytes.seek(0)
 
     # ----------------------
-    # Feed Vosk in larger chunks
+    # Load for scoring
     # ----------------------
-    wav_bytes = io.BytesIO()
-    audio_segment.export(wav_bytes, format="wav")
-    wav_bytes.seek(0)
+    y, sr = sf.read(out_bytes, dtype="float32")
 
-    wf = wave.open(wav_bytes, "rb")
+    # ----------------------
+    # Load for Vosk recognition
+    # ----------------------
+    out_bytes.seek(0)
+    wf = wave.open(out_bytes, "rb")
     rec = KaldiRecognizer(model, wf.getframerate())
+    
+    # Use larger chunks to speed up recognition
     while data := wf.readframes(16000):  # 1 second chunks
         rec.AcceptWaveform(data)
+
     predicted_text = json.loads(rec.FinalResult()).get("text", "").strip().lower()
 
     # ----------------------
-    # Acoustic score
+    # Compute scores
     # ----------------------
-    y = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
-    sr = 16000
     acoustic_score = compute_acoustic_score(y, sr)
     phoneme_score = compute_phoneme_score(text.lower(), predicted_text)
     final_score = 0.6 * phoneme_score + 0.4 * acoustic_score
