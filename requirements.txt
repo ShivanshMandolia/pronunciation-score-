@@ -5,4 +5,4 @@ requests==2.32.0
 numpy>=1.25,<2.0
 scipy>=1.10,<2.0
 vosk==0.3.45
-pydub==0.25.1
+
