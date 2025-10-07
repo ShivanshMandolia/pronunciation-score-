@@ -1,9 +1,9 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile, wave, json
+import tempfile, wave, json, subprocess
 from vosk import Model, KaldiRecognizer
-from pydub import AudioSegment
 import numpy as np
+import soundfile as sf
 from app.utils import compute_acoustic_score, compute_phoneme_score
 
 app = FastAPI()
@@ -22,20 +22,26 @@ app.add_middleware(
 MODEL_PATH = "models/vosk-model-small-en-us-0.15"
 model = Model(MODEL_PATH)
 
+
 @app.post("/analyze/")
 async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
-    # Save uploaded audio temporarily
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    tmp.write(await audio.read())
-    tmp.close()
+    # Save uploaded file temporarily
+    tmp_input = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    tmp_input.write(await audio.read())
+    tmp_input.close()
 
-    # Convert audio to mono 16kHz WAV using pydub
-    audio_segment = AudioSegment.from_file(tmp.name)
-    audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+    # Convert to mono 16kHz WAV using ffmpeg
     tmp_fixed = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    audio_segment.export(tmp_fixed.name, format="wav")
+    subprocess.run([
+        "ffmpeg", "-y", "-i", tmp_input.name,
+        "-ac", "1", "-ar", "16000",
+        tmp_fixed.name
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # Open with wave for Vosk
+    # Open with soundfile for acoustic score
+    y, sr = sf.read(tmp_fixed.name, dtype="float32")
+
+    # Use Vosk to recognize text
     wf = wave.open(tmp_fixed.name, "rb")
     rec = KaldiRecognizer(model, wf.getframerate())
     predicted_text = ""
@@ -50,10 +56,6 @@ async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
     res = json.loads(rec.FinalResult())
     predicted_text += res.get("text", "")
     predicted_text = predicted_text.strip().lower()
-
-    # Convert to NumPy array for acoustic scoring
-    y = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
-    sr = 16000
 
     # Compute scores
     acoustic_score = compute_acoustic_score(y, sr)
