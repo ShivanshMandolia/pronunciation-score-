@@ -1,5 +1,4 @@
 fastapi
-uvicorn
 transformers
 torch
 librosa
@@ -8,3 +7,7 @@ soundfile
 numpy
 scipy
 pydantic
+fastapi
+uvicorn[standard]
+soundfile
+sentencepiece
