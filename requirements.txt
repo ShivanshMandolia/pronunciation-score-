@@ -1,13 +1,13 @@
-fastapi
-transformers
-torch
-librosa
+
 PyWavelets
-soundfile
+fastapi==0.111.0
+uvicorn[standard]==0.23.2
+transformers==5.2.0
+torch==2.2.0+cpu --index-url https://download.pytorch.org/whl/cpu
+librosa==0.10.1
+soundfile==0.12.1
+sentencepiece==0.1.99
+requests==2.32.0
 numpy
 scipy
-pydantic
-fastapi
-uvicorn[standard]
-soundfile
-sentencepiece
+
