@@ -1,6 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile, librosa, requests, os
+import tempfile, soundfile as sf, librosa, requests, os
 from app.utils import compute_acoustic_score, compute_phoneme_score
 
 app = FastAPI()
@@ -20,6 +20,21 @@ AAI_TOKEN = os.getenv("AAI_TOKEN")  # Set your AssemblyAI API key in Render or .
 HEADERS = {"authorization": AAI_TOKEN}
 TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
 
+# -------------------------
+# Safe audio loading
+# -------------------------
+def load_audio(filename, target_sr=16000):
+    y, sr = sf.read(filename)  # read audio safely
+    if y.ndim > 1:  # stereo -> mono
+        y = y.mean(axis=1)
+    if sr != target_sr:
+        y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
+        sr = target_sr
+    return y, sr
+
+# -------------------------
+# API endpoint
+# -------------------------
 @app.post("/analyze/")
 async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
     # Save uploaded audio temporarily
@@ -29,10 +44,15 @@ async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
 
     # Upload audio to AssemblyAI
     with open(tmp.name, "rb") as f:
-        upload_resp = requests.post("https://api.assemblyai.com/v2/upload", 
-                                    headers=HEADERS, data=f)
+        upload_resp = requests.post(
+            "https://api.assemblyai.com/v2/upload",
+            headers=HEADERS,
+            data=f
+        )
+
     if upload_resp.status_code != 200:
         return {"error": f"Audio upload failed: {upload_resp.text}"}
+    
     audio_url = upload_resp.json()["upload_url"]
 
     # Request transcription
@@ -44,6 +64,7 @@ async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
     transcript_resp = requests.post(TRANSCRIPT_URL, headers=HEADERS, json=transcript_req)
     if transcript_resp.status_code != 200:
         return {"error": f"Transcription request failed: {transcript_resp.text}"}
+    
     transcript_id = transcript_resp.json()["id"]
 
     # Poll until transcription is complete
@@ -57,9 +78,9 @@ async def analyze(audio: UploadFile = File(...), text: str = Form(...)):
             break
         elif status == "failed":
             return {"error": "Transcription failed"}
-    
+
     # Load audio locally for scoring
-    y, sr = librosa.load(tmp.name, sr=16000)
+    y, sr = load_audio(tmp.name)
     acoustic_score = compute_acoustic_score(y, sr)
     phoneme_score = compute_phoneme_score(text, predicted_text)
     final_score = (0.6 * phoneme_score) + (0.4 * acoustic_score)
