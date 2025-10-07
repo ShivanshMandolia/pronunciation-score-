@@ -1,10 +1,8 @@
 fastapi==0.111.0
 uvicorn[standard]==0.23.2
-librosa==0.10.1       # audio processing
+librosa==0.10.1
 soundfile==0.12.1
-sentencepiece==0.1.99 # only if your utils need it
 requests==2.32.0
 numpy>=1.25,<2.0
 scipy>=1.10,<2.0
-PyWavelets>=1.4.1
-setuptools>=70.0.0
+PyWavelets
